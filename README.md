@@ -4,7 +4,7 @@
 </h1>
 
 <div align="center">
-
+ 
 [![Extension](https://img.shields.io/badge/Chrome_Extension-Manifest_V3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](#-manually-install-latest-version)
 [![Backend](https://img.shields.io/badge/Backend-Google_Cloud_Run-34A853?style=for-the-badge&logo=googlecloud&logoColor=white)](./docs/GOOGLE_CLOUD_DEPLOYMENT_GUIDE.md)
 [![Database](https://img.shields.io/badge/Database-Firebase_RTDB-FFCA28?style=for-the-badge&logo=firebase&logoColor=black)](./docs/DATABASE.md)
