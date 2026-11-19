@@ -240,7 +240,8 @@ export class ProfileService {
     const updatePayload: Partial<Record<ApiProfileField, unknown>> = {
       fullName: parsed.fullName?.trim() || existing?.fullName || 'Candidate',
       email: parsed.email?.trim() || existing?.email || '',
-      phoneNumber: parsed.phoneNumber?.trim() || '',
+      // Keep the saved number when the resume has none, like email above.
+      phoneNumber: parsed.phoneNumber?.trim() || existing?.phoneNumber || '',
       currentTitle: parsed.currentTitle?.trim() || 'Software Professional',
       resumeText: rawResumeText || parsed.backgroundNarrative || '',
       resumeFileName: fileName,

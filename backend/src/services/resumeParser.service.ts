@@ -387,6 +387,19 @@ ${truncatedText}`;
         }
       }
 
+      // 7. Phone: a model answer with fewer than 10 digits is incomplete; use the full number
+      // found in the resume text instead when there is one.
+      const llmPhoneDigits = String(parsed.phoneNumber || '').replace(/\D/g, '');
+      if (llmPhoneDigits.length < 10) {
+        const textPhone = this.extractPhoneNumber(rawText);
+        if (textPhone) {
+          parsed.phoneNumber = textPhone;
+        }
+      }
+      if (parsed.phoneNumber) {
+        parsed.phoneNumber = this.normalizePhoneNumber(String(parsed.phoneNumber));
+      }
+
       const validated = parsedResumeSchema.safeParse(parsed);
 
       if (validated.success) {
@@ -411,6 +424,40 @@ ${truncatedText}`;
   }
 
   /**
+   * Finds the first phone number in resume text, as written. Handles Indian layouts
+   * ("+91 75958 42466", "07595842466", "7595842466"), US ("+1 (555) 123-4567") and other
+   * international ones. The number must hold 10 to 12 digits after an optional "+code",
+   * must not run into more digits, and may not span lines, so years, date ranges and PIN
+   * codes are never taken for a phone. The old US-only 3-3-4 pattern cut the Indian
+   * 5-5 layout to 9 digits ("75958 4246").
+   */
+  public static extractPhoneNumber(rawText: string): string {
+    const match = (rawText || '').match(
+      /(?<!\d[ \t.-]?)(?:\+\d{1,3}[ \t.-]?)?(?:\(?\d\)?[ \t.-]?){9,11}\d(?![ \t.-]?\d)/,
+    );
+    return match ? match[0].trim() : '';
+  }
+
+  /**
+   * Indian mobile numbers become their 10 digits ("+91 90424 17622", "919042417622",
+   * "09042417622" → "9042417622"); forms take the country code from a separate field. Any other
+   * number (another country, a landline) is kept as written. Keep in sync with
+   * normalizePhoneNumber in packages/storage/lib/profile/careerBrain.ts.
+   */
+  public static normalizePhoneNumber(raw: string | undefined | null): string {
+    const value = (raw || '').trim();
+    if (!value) return '';
+    const digits = value.replace(/\D/g, '');
+    const hasPlus = value.startsWith('+');
+    let national = '';
+    if (digits.length === 10 && !hasPlus) national = digits;
+    else if (digits.length === 12 && digits.startsWith('91') && (!hasPlus || value.startsWith('+91'))) {
+      national = digits.slice(2);
+    } else if (digits.length === 11 && digits.startsWith('0') && !hasPlus) national = digits.slice(1);
+    return /^[6-9]\d{9}$/.test(national) ? national : value;
+  }
+
+  /**
    * Fast regex and heuristic extraction fallback if LLM inference is unreachable or returns malformed text.
    */
   public static fallbackHeuristicExtract(rawText: string): ParsedResumeData {
@@ -432,9 +479,7 @@ ${truncatedText}`;
     const emailMatch = rawText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
     const email = emailMatch ? emailMatch[0] : '';
 
-    // Phone regex
-    const phoneMatch = rawText.match(/(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)?\d{3}[-.\s]?\d{4}/);
-    const phoneNumber = phoneMatch ? phoneMatch[0] : '';
+    const phoneNumber = ResumeParserService.normalizePhoneNumber(ResumeParserService.extractPhoneNumber(rawText));
 
     // Links regex
     const linkedinMatch = rawText.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_-]+/i);

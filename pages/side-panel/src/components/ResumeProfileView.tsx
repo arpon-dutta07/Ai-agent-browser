@@ -15,6 +15,7 @@ import {
   cleanLocationForCityField,
   isNarrativeAnswerableQuestion,
   sanitizeRoleSearchQuery,
+  phoneNumberFromResume,
 } from '@extension/storage';
 import {
   backendApiClient,
@@ -502,7 +503,8 @@ export function ResumeProfileView({ isDarkMode = false }: ResumeProfileViewProps
             ...DEFAULT_CAREER_BRAIN,
             fullName: resolvedCandidateName,
             email: parsed.email?.trim() || profile.email || '',
-            phoneNumber: parsed.phoneNumber?.trim() || profile.phoneNumber || '',
+            // Full number from the resume (the parser can cut it short), Indian mobiles as 10 digits
+            phoneNumber: phoneNumberFromResume(parsed.phoneNumber, rawResumeText) || profile.phoneNumber || '',
             currentTitle: safeTitle,
             skills: finalSkills,
             yearsOfExperience: extractedYoe !== undefined && extractedYoe >= 0 ? extractedYoe : 0,

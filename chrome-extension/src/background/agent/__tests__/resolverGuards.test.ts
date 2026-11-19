@@ -5,12 +5,19 @@ import {
   adaptAnswerToFieldFormat,
   isSkillMentionedInText,
   resolveModalFieldWithAudit,
+  isContactPhoneLabel,
+  isContactEmailLabel,
   type FormFieldDescriptor,
 } from '../linkedin/formQuestionResolver';
 import { validateAnswerForField } from '../intelligence';
 import { resolveIndeedQuestion } from '../platforms/indeed/indeedResolver';
 import { resolveNaukriQuestion } from '../platforms/naukri/naukriResolver';
-import { type ICareerBrain, DEFAULT_CAREER_BRAIN } from '@extension/storage';
+import {
+  type ICareerBrain,
+  DEFAULT_CAREER_BRAIN,
+  isContactPhoneOrEmailQuestion,
+  phoneNumberFromResume,
+} from '@extension/storage';
 
 describe('Resolver Guards & Regression Test Suite', () => {
   const baseCareerBrain: ICareerBrain = {
@@ -453,6 +460,90 @@ describe('Resolver Guards & Regression Test Suite', () => {
       expect(res.needsUserAnswer).toBe(true);
       expect(mockLLM.invoke).not.toHaveBeenCalled();
       expect(mockPage.fillModalFieldDirect).not.toHaveBeenCalled();
+    });
+  });
+
+  // Phone saved in Settings must win over a number remembered from an earlier run
+  describe('Requirement: contact phone / email come from the profile, not remembered answers', () => {
+    const brainWithStalePhone: ICareerBrain = {
+      ...baseCareerBrain,
+      phoneNumber: '75958 42466',
+      goldenAnswers: [
+        ...(baseCareerBrain.goldenAnswers || []),
+        { id: 'ga_stale_phone', question: 'Mobile phone number', answer: '75958 4246', category: 'Screening' },
+        { id: 'ga_stale_email', question: 'Email address', answer: 'old@example.com', category: 'Screening' },
+      ],
+      customAnswers: { 'mobile phone number': '75958 4246', 'email address': 'old@example.com' },
+    };
+
+    it('LinkedIn "Mobile phone number" uses the 10-digit profile number, not a stale 9-digit golden/custom answer', () => {
+      const match = matchRuleBased({ label: 'Mobile phone number', fieldType: 'text' }, brainWithStalePhone);
+      expect(match.matched).toBe(true);
+      expect(match.answer).toBe('75958 42466');
+      expect(match.sourceDetail).toBe('profile: phoneNumber');
+    });
+
+    it('LinkedIn "Email address" uses the profile email, not a stale remembered one', () => {
+      const match = matchRuleBased({ label: 'Email address', fieldType: 'text' }, brainWithStalePhone);
+      expect(match.answer).toBe('mubasshir@example.com');
+      expect(match.sourceDetail).toBe('profile: email');
+    });
+
+    it('"Phone country code" is still answered as a country code, not the phone number', () => {
+      const match = matchRuleBased(
+        { label: 'Phone country code', fieldType: 'dropdown', options: ['India (+91)', 'United States (+1)'] },
+        brainWithStalePhone,
+      );
+      expect(match.matched).toBe(true);
+      expect(match.answer).toBe('India (+91)');
+    });
+
+    it('Indeed phone question uses the profile number', () => {
+      const res = resolveIndeedQuestion('Phone number', 'text', [], brainWithStalePhone);
+      expect(res.value).toBe('75958 42466');
+      expect(res.source).toBe('profile');
+    });
+
+    it('contact phone / email labels are recognised for the no-cache rule; other labels are not', () => {
+      for (const label of ['Mobile phone number', 'Phone', 'Contact number', 'Email address']) {
+        expect(isContactPhoneLabel(label) || isContactEmailLabel(label)).toBe(true);
+        expect(isContactPhoneOrEmailQuestion(label)).toBe(true);
+      }
+      for (const label of [
+        'Phone country code',
+        'Do you have mobile app development experience?',
+        'Do you consent to receive email updates?',
+        'Notice period',
+      ]) {
+        expect(isContactPhoneLabel(label) || isContactEmailLabel(label)).toBe(false);
+        expect(isContactPhoneOrEmailQuestion(label)).toBe(false);
+      }
+    });
+  });
+
+  // Resume upload: the stored phone is the full number, Indian mobiles as 10 digits
+  describe('Requirement: phone number taken from an uploaded resume', () => {
+    const resumeText = 'Arpon Dutta\nPhone-Alt +91 75958 42466 | arpon@example.com\nEducation 2020 - 2024';
+
+    it('repairs a 9-digit number cut by the parser from the resume text', () => {
+      expect(phoneNumberFromResume('75958 4246', resumeText)).toBe('7595842466');
+    });
+
+    it('drops the +91 / 91 / 0 prefix from Indian mobile numbers', () => {
+      expect(phoneNumberFromResume('+91 9042417622', '')).toBe('9042417622');
+      expect(phoneNumberFromResume('919042417622', '')).toBe('9042417622');
+      expect(phoneNumberFromResume('09042417622', '')).toBe('9042417622');
+      expect(phoneNumberFromResume('90424 17622', '')).toBe('9042417622');
+    });
+
+    it('finds the number in the resume text when the parser returned none', () => {
+      expect(phoneNumberFromResume('', resumeText)).toBe('7595842466');
+      expect(phoneNumberFromResume('', 'No phone here, PIN 700001, 2019-2023')).toBe('');
+    });
+
+    it('keeps numbers from other countries as written', () => {
+      expect(phoneNumberFromResume('+1 (555) 123-4567', '')).toBe('+1 (555) 123-4567');
+      expect(phoneNumberFromResume('+44 20 7946 0958', '')).toBe('+44 20 7946 0958');
     });
   });
 });
