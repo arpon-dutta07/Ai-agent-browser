@@ -2195,6 +2195,40 @@ export function derivePhoneCountryCode(careerBrain?: Partial<ICareerBrain>): Der
   return { dialingCode: '+91', countryName: 'India', isoCode: 'IN' };
 }
 
+/** "Phone country code" / "Country dialing code" fields (answered from the derived dialing code). */
+export function isPhoneCountryCodeLabel(label: string, fieldId = ''): boolean {
+  return (
+    /country\s*code|phone\s*country|dialing\s*code|country\s*calling\s*code|country\/region\s*code/i.test(
+      label || '',
+    ) || /countrycode/i.test(fieldId || '')
+  );
+}
+
+/** A contact phone number field ("Mobile phone number", "Phone", "Contact number"…). */
+export function isContactPhoneLabel(label: string): boolean {
+  const labelLower = (label || '').toLowerCase().trim();
+  return (
+    /(?:\bphone\b|\btelephone\b|\bcell\b|\bmobile\s*(?:phone|number|no\.?|contact|#)\b|\bcontact\s*number\b)/i.test(
+      labelLower,
+    ) &&
+    !/\b(?:mobile\s*(?:app|application|dev|development|engineer|tech|platform|friendly|web|stack)|support|can\s*you|are\s*you|do\s*you)\b/i.test(
+      labelLower,
+    ) &&
+    !isPhoneCountryCodeLabel(labelLower)
+  );
+}
+
+/** A contact email address field (not an email-consent / notification question). */
+export function isContactEmailLabel(label: string): boolean {
+  const labelLower = (label || '').toLowerCase().trim();
+  return (
+    /\bemail\b(?:\s*address)?/i.test(labelLower) &&
+    !/\b(?:receive|notify|notification|updates|subscribe|consent|agree|marketing|send\s*(?:me|you)?\s*email)\b/i.test(
+      labelLower,
+    )
+  );
+}
+
 /**
  * Fast Rule-Based Matcher across profile, goldenAnswers, customAnswers, and skillExperience.
  * Uses loose question matching to prevent trivial re-asking.
@@ -2219,6 +2253,22 @@ export function matchRuleBased(
     return addressAnswer.answer
       ? { matched: true, answer: addressAnswer.answer, sourceDetail: addressAnswer.sourceDetail }
       : { matched: false };
+  }
+
+  const isBinaryOrSelect =
+    field.fieldType === 'radio' ||
+    field.fieldType === 'dropdown' ||
+    field.fieldType === 'checkbox' ||
+    (field.options && field.options.some(o => /^(yes|no)$/i.test(o.trim())));
+
+  // 0b. Contact phone / email come from the Career Brain profile, ahead of golden and custom
+  // answers: a number remembered from an earlier run must never win over the one the user
+  // saved in Settings.
+  if (!isBinaryOrSelect && isContactPhoneLabel(label) && careerBrain.phoneNumber?.trim()) {
+    return { matched: true, answer: careerBrain.phoneNumber.trim(), sourceDetail: 'profile: phoneNumber' };
+  }
+  if (!isBinaryOrSelect && isContactEmailLabel(label) && careerBrain.email?.trim()) {
+    return { matched: true, answer: careerBrain.email.trim(), sourceDetail: 'profile: email' };
   }
 
   // 1a. Generic Total Work Experience (overall / total / IT industry / professional / work experience)
@@ -2671,13 +2721,7 @@ export function matchRuleBased(
     }
   }
 
-  // 4. Standard Profile Fields
-  const isBinaryOrSelect =
-    field.fieldType === 'radio' ||
-    field.fieldType === 'dropdown' ||
-    field.fieldType === 'checkbox' ||
-    (field.options && field.options.some(o => /^(yes|no)$/i.test(o.trim())));
-
+  // 4. Standard Profile Fields (isBinaryOrSelect is computed at the top of this function)
   // 4a. Work-experience screening ("Do you have work experience?") -> [MATCHED] from
   // structured Career Brain data. Golden/custom answers above always take precedence;
   // LLM/ask_user is used only when the profile has no work-experience evidence at all.
@@ -2719,9 +2763,7 @@ export function matchRuleBased(
   }
 
   // Phone country code / Country dialing code (dropdown, combobox, or text)
-  const isPhoneCountryCodeQuestion =
-    /country\s*code|phone\s*country|dialing\s*code|country\s*calling\s*code|country\/region\s*code/i.test(labelLower) ||
-    /countrycode/i.test(field.id || '');
+  const isPhoneCountryCodeQuestion = isPhoneCountryCodeLabel(labelLower, field.id || '');
 
   if (isPhoneCountryCodeQuestion) {
     const derived = derivePhoneCountryCode(careerBrain);
@@ -2757,29 +2799,7 @@ export function matchRuleBased(
     };
   }
 
-  const isPhoneQuestion =
-    !isBinaryOrSelect &&
-    /(?:\bphone\b|\btelephone\b|\bcell\b|\bmobile\s*(?:phone|number|no\.?|contact|#)\b|\bcontact\s*number\b)/i.test(
-      labelLower,
-    ) &&
-    !/\b(?:mobile\s*(?:app|application|dev|development|engineer|tech|platform|friendly|web|stack)|support|can\s*you|are\s*you|do\s*you)\b/i.test(
-      labelLower,
-    );
-
-  if (isPhoneQuestion && careerBrain.phoneNumber) {
-    return { matched: true, answer: careerBrain.phoneNumber, sourceDetail: 'profile: phoneNumber' };
-  }
-
-  const isEmailQuestion =
-    !isBinaryOrSelect &&
-    /\bemail\b(?:\s*address)?/i.test(labelLower) &&
-    !/\b(?:receive|notify|notification|updates|subscribe|consent|agree|marketing|send\s*(?:me|you)?\s*email)\b/i.test(
-      labelLower,
-    );
-
-  if (isEmailQuestion && careerBrain.email) {
-    return { matched: true, answer: careerBrain.email, sourceDetail: 'profile: email' };
-  }
+  // Contact phone / email are answered from the profile in step 0b above.
 
   // First Name / Given Name (Essential for fresh LinkedIn / Job portal accounts with empty contact fields)
   const isFirstName = !isBinaryOrSelect && /(?:\bfirst\s*name\b|\bgiven\s*name\b|\bforename\b)/i.test(labelLower);
@@ -4713,7 +4733,9 @@ OUTPUT STRICTLY VALID JSON ONLY:
         if (
           !isGenericWorkExperienceDateField(cleanLabel) &&
           !isSocialMediaOrUrlQuestion(cleanLabel) &&
-          !isGenericFieldLabel(cleanLabel)
+          !isGenericFieldLabel(cleanLabel) &&
+          !isContactPhoneLabel(cleanLabel) &&
+          !isContactEmailLabel(cleanLabel)
         ) {
           await careerBrainStore.saveGoldenAnswer(cleanLabel, ans, 'Screening').catch(() => {});
           if (!careerBrain.goldenAnswers) careerBrain.goldenAnswers = [];
@@ -5815,7 +5837,9 @@ export async function resolveModalFieldWithAudit(
         if (
           !isGenericWorkExperienceDateField(label) &&
           !isSocialMediaOrUrlQuestion(label) &&
-          !isGenericFieldLabel(label)
+          !isGenericFieldLabel(label) &&
+          !isContactPhoneLabel(label) &&
+          !isContactEmailLabel(label)
         ) {
           await careerBrainStore.saveGoldenAnswer(label, subjectiveMatch.answer, 'Screening').catch(() => {});
         }
@@ -6130,7 +6154,11 @@ export async function rememberResolvedAnswer(questionLabel: string, answer: stri
     isSocialMediaOrUrlQuestion(label) ||
     isNarrativeAnswerableQuestion(label) ||
     // Address details are re-derived from Career Brain answers / the resume on every run.
-    classifyAddressField(label)
+    classifyAddressField(label) ||
+    // Contact phone / email always come from the Career Brain profile, so a cached copy can
+    // never go stale after the user edits them in Settings.
+    isContactPhoneLabel(label) ||
+    isContactEmailLabel(label)
   ) {
     return;
   }

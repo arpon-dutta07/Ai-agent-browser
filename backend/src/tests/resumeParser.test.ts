@@ -284,4 +284,29 @@ Machine Learning: Scikit-learn, Pandas, NumPy, Flask, Model Training & Evaluatio
     expect(cleanLocationForCityField('Greater Bengaluru Area')).toBe('Greater Bengaluru Area');
     expect(cleanLocationForCityField('Remote')).toBe('');
   });
+
+  it('8. Extracts the full phone number in Indian and international layouts (never a 9-digit cut)', () => {
+    expect(ResumeParserService.extractPhoneNumber('Phone-Alt +91 75958 42466 | a@b.com')).toBe('+91 75958 42466');
+    expect(ResumeParserService.extractPhoneNumber('75958 42466')).toBe('75958 42466');
+    expect(ResumeParserService.extractPhoneNumber('+91-7595842466')).toBe('+91-7595842466');
+    expect(ResumeParserService.extractPhoneNumber('07595842466')).toBe('07595842466');
+    expect(ResumeParserService.extractPhoneNumber('+1 (555) 123-4567')).toBe('+1 (555) 123-4567');
+    expect(ResumeParserService.extractPhoneNumber('Education 2020 - 2024\nPhone: 75958 42466')).toBe('75958 42466');
+    expect(ResumeParserService.extractPhoneNumber('Phone: 7595842466\n2023 - Present')).toBe('7595842466');
+    expect(ResumeParserService.extractPhoneNumber('PIN 700001, CGPA 8.5, 2019-2023')).toBe('');
+
+    const parsed = ResumeParserService.fallbackHeuristicExtract('Arpon Dutta\nPhone-Alt +91 75958 42466\nKolkata');
+    expect(parsed.phoneNumber).toBe('7595842466');
+  });
+
+  it('9. Normalizes Indian mobile numbers to 10 digits and keeps other numbers as written', () => {
+    expect(ResumeParserService.normalizePhoneNumber('+91 9042417622')).toBe('9042417622');
+    expect(ResumeParserService.normalizePhoneNumber('+91 75958 42466')).toBe('7595842466');
+    expect(ResumeParserService.normalizePhoneNumber('919042417622')).toBe('9042417622');
+    expect(ResumeParserService.normalizePhoneNumber('09042417622')).toBe('9042417622');
+    expect(ResumeParserService.normalizePhoneNumber('90424 17622')).toBe('9042417622');
+    expect(ResumeParserService.normalizePhoneNumber('+1 (555) 123-4567')).toBe('+1 (555) 123-4567');
+    expect(ResumeParserService.normalizePhoneNumber('+44 20 7946 0958')).toBe('+44 20 7946 0958');
+    expect(ResumeParserService.normalizePhoneNumber('')).toBe('');
+  });
 });

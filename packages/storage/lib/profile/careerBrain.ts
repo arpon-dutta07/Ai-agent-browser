@@ -62,6 +62,76 @@ export function isSocialMediaOrUrlQuestion(question: string): boolean {
 }
 
 /**
+ * Finds the first phone number in resume text, as written ("+91 75958 42466", "07595842466",
+ * "+1 (555) 123-4567"). It must hold 10 to 12 digits after an optional "+code", must not run
+ * into more digits and may not span lines, so years, date ranges and PIN codes are skipped.
+ * Keep in sync with ResumeParserService.extractPhoneNumber in the backend.
+ */
+export function extractPhoneNumberFromText(text: string | undefined | null): string {
+  const match = (text || '').match(/(?<!\d[ \t.-]?)(?:\+\d{1,3}[ \t.-]?)?(?:\(?\d\)?[ \t.-]?){9,11}\d(?![ \t.-]?\d)/);
+  return match ? match[0].trim() : '';
+}
+
+/**
+ * Indian mobile numbers become their 10 digits ("+91 90424 17622", "919042417622",
+ * "09042417622" → "9042417622"); LinkedIn and other forms take the country code from a separate
+ * field. Any other number (another country, a landline) is kept as written.
+ */
+export function normalizePhoneNumber(raw: string | undefined | null): string {
+  const value = (raw || '').trim();
+  if (!value) return '';
+  const digits = value.replace(/\D/g, '');
+  const hasPlus = value.startsWith('+');
+  let national = '';
+  if (digits.length === 10 && !hasPlus) national = digits;
+  else if (digits.length === 12 && digits.startsWith('91') && (!hasPlus || value.startsWith('+91'))) {
+    national = digits.slice(2);
+  } else if (digits.length === 11 && digits.startsWith('0') && !hasPlus) national = digits.slice(1);
+  return /^[6-9]\d{9}$/.test(national) ? national : value;
+}
+
+/**
+ * The phone number to store from a parsed resume: the parser's answer when it is complete,
+ * otherwise the full number found in the resume text (older parsers cut "75958 42466" to
+ * "75958 4246"), then normalized with normalizePhoneNumber.
+ */
+export function phoneNumberFromResume(parsedPhone: string | undefined | null, resumeText?: string | null): string {
+  let phone = (parsedPhone || '').trim();
+  if (phone.replace(/\D/g, '').length < 10) {
+    phone = extractPhoneNumberFromText(resumeText) || phone;
+  }
+  return normalizePhoneNumber(phone);
+}
+
+/**
+ * Detects contact phone / email questions ("Mobile phone number", "Email address"…).
+ * They are answered from the profile's phoneNumber / email on every run, so they must never
+ * be stored as golden or custom answers: a stored copy goes stale (e.g. a 9-digit number from
+ * an old resume parse) and used to win over the number the user saved in Settings.
+ * Phone country code questions are not contact numbers and are not matched.
+ */
+export function isContactPhoneOrEmailQuestion(question: string | undefined | null): boolean {
+  if (!question || typeof question !== 'string') return false;
+  const q = question.trim().toLowerCase();
+  if (/country\s*code|phone\s*country|dialing\s*code|country\s*calling\s*code|country\/region\s*code/i.test(q)) {
+    return false;
+  }
+  const isPhone =
+    /(?:\bphone\b|\btelephone\b|\bcell\b|\bmobile\s*(?:phone|number|no\.?|contact|#)\b|\bcontact\s*number\b)/i.test(
+      q,
+    ) &&
+    !/\b(?:mobile\s*(?:app|application|dev|development|engineer|tech|platform|friendly|web|stack)|support|can\s*you|are\s*you|do\s*you)\b/i.test(
+      q,
+    );
+  const isEmail =
+    /\bemail\b(?:\s*address)?/i.test(q) &&
+    !/\b(?:receive|notify|notification|updates|subscribe|consent|agree|marketing|send\s*(?:me|you)?\s*email)\b/i.test(
+      q,
+    );
+  return isPhone || isEmail;
+}
+
+/**
  * Detects placeholder field labels emitted by DOM discovery on newer LinkedIn
  * Easy Apply steps when a control has no accessible name (e.g. "Form Field",
  * "Photo", "Input", a bare number). Such labels must never be stored as golden
@@ -973,14 +1043,18 @@ export async function saveCareerBrainData(data: unknown): Promise<SaveCareerBrai
     // 2. Add timestamp & enforce clean priority sorting + filter social media / placeholder questions
     const cleanGoldenAnswers = sortGoldenAnswersByPriority(
       (parseResult.data.goldenAnswers || []).filter(
-        ga => !isSocialMediaOrUrlQuestion(ga.question) && !isGenericPlaceholderFieldLabel(ga.question),
+        ga =>
+          !isSocialMediaOrUrlQuestion(ga.question) &&
+          !isGenericPlaceholderFieldLabel(ga.question) &&
+          !isContactPhoneOrEmailQuestion(ga.question),
       ),
     );
 
-    // Drop custom answers keyed by placeholder labels ("Form Field", "Photo", …)
+    // Drop custom answers keyed by placeholder labels ("Form Field", "Photo", …) and
+    // contact phone / email copies (those always come from the profile fields).
     const cleanCustomAnswers: Record<string, string> = {};
     for (const [questionKey, answer] of Object.entries(parseResult.data.customAnswers || {})) {
-      if (!isGenericPlaceholderFieldLabel(questionKey)) {
+      if (!isGenericPlaceholderFieldLabel(questionKey) && !isContactPhoneOrEmailQuestion(questionKey)) {
         cleanCustomAnswers[questionKey] = answer;
       }
     }
@@ -1104,7 +1178,9 @@ export async function getCareerBrainData(): Promise<ICareerBrain> {
         ga =>
           !isGenericWorkExperienceDateField(ga.question) &&
           !isSocialMediaOrUrlQuestion(ga.question) &&
-          !isGenericPlaceholderFieldLabel(ga.question),
+          !isGenericPlaceholderFieldLabel(ga.question) &&
+          // Stale contact phone / email copies (e.g. a 9-digit number cached by older builds)
+          !isContactPhoneOrEmailQuestion(ga.question),
       );
       if (filtered.length !== data.goldenAnswers.length) {
         data.goldenAnswers = filtered;
@@ -1113,12 +1189,12 @@ export async function getCareerBrainData(): Promise<ICareerBrain> {
     }
 
     // Seamless auto-migration: Drop custom answers keyed by placeholder labels that
-    // older builds auto-saved from unnamed form controls.
+    // older builds auto-saved from unnamed form controls, and cached contact phone / email.
     let purgedCustomAnswers = false;
     if (data.customAnswers && Object.keys(data.customAnswers).length > 0) {
       const cleanedCustom: Record<string, string> = {};
       for (const [questionKey, answer] of Object.entries(data.customAnswers)) {
-        if (isGenericPlaceholderFieldLabel(questionKey)) {
+        if (isGenericPlaceholderFieldLabel(questionKey) || isContactPhoneOrEmailQuestion(questionKey)) {
           purgedCustomAnswers = true;
         } else {
           cleanedCustom[questionKey] = answer;
@@ -1319,8 +1395,9 @@ export const careerBrainStore: CareerBrainStorage = {
   },
 
   async setCustomAnswer(questionKey: string, answer: string): Promise<void> {
-    // Never persist placeholder field labels ("Form Field", "Photo") as custom answers.
-    if (isGenericPlaceholderFieldLabel(questionKey)) return;
+    // Never persist placeholder field labels ("Form Field", "Photo") or contact phone / email
+    // (answered from the profile fields) as custom answers.
+    if (isGenericPlaceholderFieldLabel(questionKey) || isContactPhoneOrEmailQuestion(questionKey)) return;
     const current = await this.getCareerBrain();
     const customAnswers = { ...current.customAnswers, [questionKey]: answer };
     await this.updateCareerBrain({ customAnswers });
@@ -1341,7 +1418,8 @@ export const careerBrainStore: CareerBrainStorage = {
       isGenericWorkExperienceDateField(question) ||
       isSocialMediaOrUrlQuestion(question) ||
       isNarrativeAnswerableQuestion(question) ||
-      isGenericPlaceholderFieldLabel(question)
+      isGenericPlaceholderFieldLabel(question) ||
+      isContactPhoneOrEmailQuestion(question)
     ) {
       return;
     }
